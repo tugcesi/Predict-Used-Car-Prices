@@ -6,6 +6,7 @@ Notebook pipeline ile birebir uyumlu.
 import warnings
 warnings.filterwarnings('ignore')
 
+import re
 import os
 import numpy as np
 import pandas as pd
@@ -45,45 +46,43 @@ def extract_fuel_from_engine(engine_str: str):
     if 'electric' in s: return 'Electric'
     if 'diesel'   in s: return 'Diesel'
     if 'hybrid'   in s or 'mild' in s: return 'Hybrid'
-    if 'flex'     in s or 'e85' in s:  return 'E85 Flex Fuel'
+    if 'flex'     in s or 'e85'  in s: return 'E85 Flex Fuel'
     if 'gasoline' in s: return 'Gasoline'
     return None
 
 
 def build_input_df(inputs: dict, encoders: dict) -> pd.DataFrame:
-    """
-    Kullanıcı girdilerinden notebook pipeline'ındaki ile aynı feature satırını oluşturur.
-    """
     brand        = inputs['brand']
     model_name   = inputs['model']
     model_year   = inputs['model_year']
     milage       = float(inputs['milage'])
     fuel_type    = inputs['fuel_type']
-    engine_str   = inputs['engine']       # raw engine string
+    engine_str   = inputs['engine']
     transmission = inputs['transmission']
     ext_col      = inputs['ext_col']
     int_col      = inputs['int_col']
     accident     = inputs['accident']
     clean_title  = inputs['clean_title']
 
-    # ── fuel_type (engine'den de doldur, sonra moda) ─────────────────────────
-    if pd.isnull(fuel_type) or fuel_type == '':
-        fuel_type = extract_fuel_from_engine(engine_str) or \
-                    encoders.get('brand_model_fuel', {}).get((brand, model_name)) or \
-                    encoders.get('brand_fuel', {}).get(brand) or \
-                    encoders['fuel_type_global_mode']
+    # fuel_type — engine'den otomatik doldur
+    if not fuel_type:
+        fuel_type = (
+            extract_fuel_from_engine(engine_str)
+            or encoders.get('brand_model_fuel', {}).get((brand, model_name))
+            or encoders.get('brand_fuel', {}).get(brand)
+            or encoders['fuel_type_global_mode']
+        )
 
-    # ── Engine feature extraction ─────────────────────────────────────────────
-    import re
-    hp_match  = re.search(r'(\d+\.?\d*)HP',          engine_str, re.IGNORECASE)
-    es_match  = re.search(r'(\d+\.?\d*)L',            engine_str, re.IGNORECASE)
-    cyl_match = re.search(r'(\d+)\s*Cylinder',        engine_str, re.IGNORECASE)
+    # Engine feature extraction
+    hp_match  = re.search(r'(\d+\.?\d*)HP',       engine_str, re.IGNORECASE)
+    es_match  = re.search(r'(\d+\.?\d*)L',         engine_str, re.IGNORECASE)
+    cyl_match = re.search(r'(\d+)\s*Cylinder',     engine_str, re.IGNORECASE)
 
     horsepower  = float(hp_match.group(1))  if hp_match  else encoders['hp_median']
     engine_size = float(es_match.group(1))  if es_match  else encoders['engine_size_median']
     cylinders   = float(cyl_match.group(1)) if cyl_match else encoders['cylinders_median']
 
-    # ── Derived features ──────────────────────────────────────────────────────
+    # Derived features
     car_age         = 2026 - model_year
     milage_per_year = milage / max(car_age, 1)
     has_accident    = 1 if accident == 'At least 1 accident or damage reported' else 0
@@ -116,13 +115,8 @@ def build_input_df(inputs: dict, encoders: dict) -> pd.DataFrame:
     }
 
     df_row = pd.DataFrame([row])
-
-    # ── get_dummies (training ile aynı kolonları oluştur) ─────────────────────
     df_row = pd.get_dummies(df_row, drop_first=True)
-
-    # Eksik kolonları 0 ile doldur, fazla kolonları at
     df_row = df_row.reindex(columns=feature_columns, fill_value=0)
-
     return df_row
 
 
@@ -149,7 +143,7 @@ def make_gauge(price: float) -> go.Figure:
 
 # ── Başlık ────────────────────────────────────────────────────────────────────
 st.title("🚗 Used Car Price Predictor")
-st.caption("Kaggle Playground Series S4E9 | LightGBM | ~0.16 R²")
+st.caption("Kaggle Playground Series S4E9 | LightGBM")
 st.divider()
 
 # ── Sidebar: Kullanıcı Girdileri ─────────────────────────────────────────────
@@ -157,9 +151,8 @@ with st.sidebar:
     st.header("🔧 Araç Bilgileri")
 
     st.subheader("🏷️ Marka & Model")
-    brand = st.selectbox("Marka", encoders['brands'])
-    model_opts = encoders['models']
-    model_name = st.selectbox("Model", model_opts)
+    brand      = st.selectbox("Marka", encoders['brands'])
+    model_name = st.selectbox("Model", encoders['models'])
     model_year = st.slider("Model Yılı", 1990, 2024, 2018)
 
     st.subheader("📏 Kilometre")
@@ -176,11 +169,9 @@ with st.sidebar:
     st.caption("HP, motor hacmi ve silindir bu alandan otomatik çıkarılır.")
 
     st.subheader("⛽ Yakıt & Şanzıman")
-    fuel_type    = st.selectbox(
-        "Yakıt Tipi", ['(engine'den otomatik)'] + encoders['fuel_types']
-    )
-    if fuel_type == '(engine\'den otomatik)':
-        fuel_type = ''
+    fuel_options = ["(engine'den otomatik tespit)"] + encoders['fuel_types']
+    fuel_sel  = st.selectbox("Yakıt Tipi", fuel_options)
+    fuel_type = "" if fuel_sel == "(engine'den otomatik tespit)" else fuel_sel
 
     transmission = st.selectbox("Şanzıman", encoders['transmissions'])
 
@@ -226,10 +217,9 @@ if predict_btn:
 
         with col2:
             st.info("### 📋 Girilen Araç Özellikleri")
-            import re
-            hp_m  = re.search(r'(\d+\.?\d*)HP', engine_str, re.I)
-            es_m  = re.search(r'(\d+\.?\d*)L',  engine_str, re.I)
-            cy_m  = re.search(r'(\d+)\s*Cylinder', engine_str, re.I)
+            hp_m  = re.search(r'(\d+\.?\d*)HP',      engine_str, re.I)
+            es_m  = re.search(r'(\d+\.?\d*)L',        engine_str, re.I)
+            cy_m  = re.search(r'(\d+)\s*Cylinder',    engine_str, re.I)
             car_age = 2026 - model_year
 
             display = pd.DataFrame({
@@ -243,8 +233,8 @@ if predict_btn:
                 'Değer': [
                     brand, model_name, model_year, f"{car_age} yıl",
                     f"{milage:,} mi",
-                    f"{milage / max(car_age, 1):,.0f} mi/yıl",
-                    fuel_type or "(engine'den)",
+                    f"{milage / max(car_age,1):,.0f} mi/yıl",
+                    fuel_type or "(engine'den tespit edildi)",
                     transmission,
                     f"{float(hp_m.group(1)):.0f} HP" if hp_m else encoders['hp_median'],
                     f"{float(es_m.group(1)):.1f} L"  if es_m else encoders['engine_size_median'],
@@ -279,18 +269,17 @@ if predict_btn:
         st.error(f"⚠️ Hata: {e}")
 
 else:
-    # ── Karşılama ekranı ──────────────────────────────────────────────────────
     st.info("👈 Sol panelden araç bilgilerini doldurun ve **Fiyat Tahmin Et** butonuna tıklayın.")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Model",     "LightGBM")
-    c2.metric("Yarışma",   "Kaggle S4E9")
-    c3.metric("Train Rows","188,533")
-    c4.metric("Hedef",     "price (USD)")
+    c1.metric("Model",      "LightGBM")
+    c2.metric("Yarışma",    "Kaggle S4E9")
+    c3.metric("Train Rows", "188,533")
+    c4.metric("Hedef",      "price (USD)")
 
     st.subheader("🔬 Feature Engineering Özeti")
     fe_df = pd.DataFrame({
-        'Özellik'  : [
+        'Özellik': [
             'horsepower', 'engine_size', 'cylinders',
             'car_age', 'milage_per_year', 'has_accident',
             'is_clean_title', 'is_automatic', 'is_luxury', 'hp_per_cylinder'
@@ -316,11 +305,3 @@ else:
         ]
     })
     st.dataframe(fe_df, hide_index=True, use_container_width=True)
-
-    st.subheader("📊 Encoding")
-    st.markdown("""
-    | Sütun Tipi | Yöntem |
-    |---|---|
-    | Kategorik (`brand`, `model`, `fuel_type`, `transmission`, `ext_col`, `int_col`, `accident`, `clean_title`) | `pd.get_dummies(drop_first=True)` |
-    | Numerik | Doğrudan kullanım |
-    """)
